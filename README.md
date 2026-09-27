@@ -1,126 +1,126 @@
 # SJSU Parking Monitor
 
-A small Windows demo that checks live SJSU garage occupancy, sends the result through a RocketRide pipeline powered by a configurable LLM, and shows the response as a Windows notification.
+A small cross-platform CLI that checks live SJSU garage occupancy, sends the result through a RocketRide pipeline, and prints a concise status.
 
-Recommended repository name: `sjsu-parking-monitor`
-
-## What problem it solves
-
-Finding an open SJSU garage can take time. This monitor turns the live parking status page into a concise notification for the garage you choose.
-
-## Architecture
+## How it works
 
 ```text
-SJSU Parking Status
-        ↓
-      curl
-        ↓
-  Python Parser
-        ↓
-   RocketRide
-        ↓
- Configured LLM
-        ↓
-Windows Notification
+SJSU Parking Status -> Python HTTP client -> Garage parser -> RocketRide -> Console status
+                                                               |
+                                                   Optional desktop notification
 ```
 
-The script fetches live HTML with Windows `curl.exe`, parses the selected garage, and passes the live garage name and percentage into RocketRide. RocketRide is the AI orchestration layer after the live parking data is retrieved; the configured LLM produces the concise human-facing status line.
-
-## Technologies
-
-- Python 3.10+
-- Windows `curl.exe`
-- RocketRide Python client and pipeline engine
-- Configurable RocketRide LLM provider (Gemini is the default example)
-- `winotify` Windows toast notifications
+The monitor uses Python's standard-library HTTP client, so it does not require `curl.exe` or another operating-system executable. Terminal output is formatted with Rich, which works across Windows, macOS, and Linux. Console-only operation is the default. Windows desktop notifications are available when explicitly requested with `--notify desktop`.
 
 ## Prerequisites
 
-1. Windows with `curl.exe` available on `PATH`.
-2. Python 3.10 or newer.
-3. A running RocketRide engine. The default local endpoint is `ws://localhost:5565`.
-4. An API key if your selected LLM provider requires one. Local providers such as Ollama can run without a cloud key.
+- Python 3.10 or newer
+- A running RocketRide engine, normally at `ws://localhost:5565`
+- An API key for the LLM configured in `sjsu-parking.pipe`
 
-## Setup
+The local RocketRide development handshake is used automatically for localhost. A RocketRide engine key is not required in `.env`.
 
-```powershell
-git clone https://github.com/your-user/sjsu-parking-monitor.git
+## Why RocketRide is included
+
+Parking retrieval and parsing remain deterministic Python application code. RocketRide sits around that workflow as an inspectable AI harness: the application sends the live, parsed status into a small pipeline, and the pipeline owns the prompt, model profile, provider, and response formatting.
+
+To change providers or models, edit `sjsu_parking_monitor/sjsu-parking.pipe` rather than rewriting the garage fetcher or parser. The current pipeline uses Gemini as a simple example, but the Python integration stays provider-neutral through `ROCKETRIDE_LLM_API_KEY`. This keeps the project useful as the workflow grows beyond a one-line status response without claiming that AI is required to read the parking page.
+
+## Install
+
+```bash
+git clone https://github.com/tonytrieu-dev/sjsu-parking-monitor.git
 cd sjsu-parking-monitor
-py -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install -r requirements.txt
-Copy-Item .env.example .env
+python -m venv .venv
 ```
 
-Edit `.env` and set your Gemini key and preferred garage:
+Activate the environment using the shell for your operating system, then install the package:
+
+```bash
+python -m pip install .
+```
+
+For development and tests:
+
+```bash
+python -m pip install -r requirements-dev.txt
+```
+
+On Windows, `winotify` is installed automatically by the platform marker in `pyproject.toml`. On macOS and Linux, the monitor runs without desktop notifications unless a future notifier adapter is added.
+
+## Configuration
+
+Copy `.env.example` to `.env` and set:
 
 ```env
 ROCKETRIDE_LLM_API_KEY=your_llm_api_key
-SJSU_GARAGE=your_garage_name_here
+SJSU_GARAGE=North Garage
 ```
 
-The Python client connects to the local RocketRide engine at `ws://localhost:5565` using its built-in local development handshake; no RocketRide engine key is required in `.env`. The included pipeline uses the direct `llm_gemini` provider and the provider-neutral `ROCKETRIDE_LLM_API_KEY`; no LLM URL is needed. Users of another LLM can replace that single LLM component in `sjsu-parking.pipe` while keeping the same key variable.
+Supported garages currently include North Garage, South Garage, West Garage, and South Campus Garage. The selected garage is required; there is no implicit default.
 
-The RocketRide engine/runtime is intentionally not included in this repository. Install or run it separately, then import `sjsu-parking.pipe` into that engine if your setup requires an explicit pipeline import.
+The monitor reads `.env` from its current working directory. Run the command from the directory containing that file; command-line options and existing shell variables still take precedence.
 
-## Choose a garage
+## CLI
 
-Set the required `SJSU_GARAGE` variable to one of the garage names currently listed by SJSU:
+Run using the installed command:
 
-- `North Garage`
-- `South Garage`
-- `West Garage`
-- `South Campus Garage`
-
-For example:
-
-```env
-SJSU_GARAGE=West Garage
+```bash
+parking-monitor
 ```
 
-If the value is missing, the script stops with a helpful error listing the valid garage names. If it cannot find the requested garage, it stops with an error naming the requested value.
+Example output:
 
-## Run
+```text
++- SJSU Parking Status -------+
+|                             |
+|  North Garage               |
+|  8% full                    |
+|                             |
++-----------------------------+
+```
 
-Start the RocketRide engine, confirm the selected LLM credentials are available, and run:
+Command-line options override corresponding environment variables:
 
-```powershell
+```bash
+parking-monitor --garage "West Garage" --notify none
+parking-monitor --uri ws://localhost:5565
+```
+
+Available options:
+
+- `--garage NAME`: overrides `SJSU_GARAGE`.
+- `--notify {desktop,none}`: overrides `SJSU_NOTIFY`. `none` is the default.
+- `--uri URI`: overrides `ROCKETRIDE_URI`.
+
+The original entry point remains supported:
+
+```bash
 python check_parking.py
 ```
 
-Example console output:
+Use `--notify desktop` to request a Windows notification. Notification failures are fatal when desktop delivery is explicitly requested.
 
-```text
-West Garage: 35% full
+## Scheduling
+
+Use the scheduler native to your operating system:
+
+- Windows: Task Scheduler, running `parking-monitor` or the virtual environment's Python executable.
+- macOS: `launchd`.
+- Linux: `cron` or a `systemd` timer.
+
+Set the scheduled task's working directory to the directory containing `.env`. The pipeline is bundled in the installed package and does not need to be copied beside the task. Desktop notifications may require an interactive user session, depending on the operating system.
+
+## Development
+
+Run the parser and CLI tests with:
+
+```bash
+pytest
 ```
 
-The same status is shown in a Windows notification titled `SJSU Parking`.
-
-## Windows Task Scheduler
-
-Create a task that runs `python.exe` with `check_parking.py` as its argument, using the repository as the **Start in** directory. For example:
-
-```text
-Program: C:\path\to\sjsu-parking-monitor\.venv\Scripts\python.exe
-Arguments: C:\path\to\sjsu-parking-monitor\check_parking.py
-Start in: C:\path\to\sjsu-parking-monitor
-```
-
-The current scheduling example is Mondays and Wednesdays at 3:00 PM and 4:00 PM, but the script has no time-of-day restriction. Add any Task Scheduler triggers you want—for example, hourly, daily, or at different times on different days. The task must run in a logged-in Windows session for toast notifications to appear.
-
-## Project structure
-
-```text
-check_parking.py    Fetches, parses, orchestrates, and notifies
-sjsu-parking.pipe   RocketRide chat → configurable LLM provider → response pipeline
-.env.example        Safe configuration template
-requirements.txt    Runtime Python dependencies
-```
+The tests do not contact the live SJSU site or require a running RocketRide engine.
 
 ## Security
 
-API keys and engine credentials are supplied through environment variables in `.env`. `.env`, virtual environments, downloaded wheels, logs, caches, IDE files, and the RocketRide runtime directory are ignored by Git. Never commit real credentials; if a key was previously exposed, revoke and replace it before publishing the repository.
-
-## License
-
-Add the license that fits your presentation or project before publishing.
+`.env` and local RocketRide runtime files are ignored by Git. Never commit API keys. If a key is exposed, revoke and replace it.
