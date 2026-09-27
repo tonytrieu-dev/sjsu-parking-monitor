@@ -1,14 +1,17 @@
+import argparse
 import asyncio
 import os
+import platform
 import re
-import subprocess
 from pathlib import Path
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
+from rich.console import Console
+from rich.panel import Panel
+from rich.text import Text
 from rocketride import RocketRideClient
 from rocketride.schema import Question
-from winotify import Notification
-
-
 PIPELINE = Path(__file__).with_name("sjsu-parking.pipe")
 URL = "https://sjsuparkingstatus.sjsu.edu/"
 GARAGE_NAMES = (
@@ -34,29 +37,89 @@ def load_local_env():
         os.environ.setdefault(key.strip(), value)
 
 
-def fetch_parking_page():
-    result = subprocess.run(
-        [
-            "curl.exe",
-            "-f",
-            "-sS",
-            "-L",
-            "-A",
-            "Mozilla/5.0",
-            URL,
-        ],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        check=True,
+def fetch_parking_page(url=URL, timeout=30):
+    """Fetch the live parking page without requiring an OS-specific executable."""
+    request = Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            return response.read().decode("utf-8", errors="replace")
+    except HTTPError as error:
+        raise RuntimeError(f"SJSU parking page returned HTTP {error.code}") from error
+    except URLError as error:
+        raise RuntimeError(f"Could not reach the SJSU parking page: {error.reason}") from error
+
+
+def parse_args(args=None):
+    parser = argparse.ArgumentParser(description="Report live SJSU garage fullness.")
+    parser.add_argument(
+        "--garage",
+        default=None,
+        help="Garage name (defaults to SJSU_GARAGE).",
     )
-    return result.stdout
+    parser.add_argument(
+        "--notify",
+        choices=("auto", "desktop", "none"),
+        default=None,
+        help="Notification mode (defaults to SJSU_NOTIFY or auto).",
+    )
+    parser.add_argument(
+        "--uri",
+        default=None,
+        help="RocketRide WebSocket URI (defaults to ROCKETRIDE_URI or localhost).",
+    )
+    return parser.parse_args(args)
+
+
+def send_notification(message, mode):
+    """Send a desktop notification when supported, otherwise remain console-safe."""
+    if mode == "none":
+        return
+    if platform.system() != "Windows":
+        if mode == "desktop":
+            raise RuntimeError("Desktop notifications are currently supported only on Windows")
+        return
+
+    try:
+        from winotify import Notification
+    except ImportError as error:
+        if mode == "desktop":
+            raise RuntimeError(
+                "Desktop notifications require the optional winotify dependency"
+            ) from error
+        return
+    Notification(app_id="SJSU Parking", title="SJSU Parking", msg=message).show()
+
+
+def resolve_notification_mode(cli_mode=None):
+    mode = cli_mode or os.getenv("SJSU_NOTIFY", "auto").strip().lower()
+    if mode not in {"auto", "desktop", "none"}:
+        raise ValueError("SJSU_NOTIFY must be one of: auto, desktop, none")
+    return mode
+
+
+def status_color(percent):
+    """Return the display color for a garage fullness percentage."""
+    if percent >= 90:
+        return "red"
+    if percent >= 70:
+        return "yellow"
+    return "green"
+
+
+def print_status(garage, percent, status, console=None):
+    """Render a readable terminal status while preserving the LLM response."""
+    console = console or Console()
+    color = status_color(percent)
+    content = Text()
+    content.append(f"{garage}\n", style="bold")
+    content.append(f"{percent}% full\n\n", style=f"bold {color}")
+    content.append(status)
+    console.print(Panel(content, title="SJSU Parking", border_style=color, padding=(1, 2)))
 
 
 def parse_garage_status(html, garage_name):
     """Return (garage name, fullness percentage) for the selected garage."""
-    requested = garage_name.strip()
+    requested = (garage_name or "").strip()
     if not requested:
         raise ValueError(
             "SJSU_GARAGE is required. Choose one of: "
@@ -81,16 +144,20 @@ def parse_garage_status(html, garage_name):
         )
 
     fullness = match.group("fullness") or match.group("full")
-    return requested, 100 if fullness.lower() == "full" else int(fullness)
+    percent = 100 if fullness.lower() == "full" else int(fullness)
+    if not 0 <= percent <= 100:
+        raise ValueError(f"Invalid fullness percentage for {requested!r}: {percent}%")
+    return requested, percent
 
 
 async def main():
     load_local_env()
-    garage = os.getenv("SJSU_GARAGE", "").strip()
+    args = parse_args()
+    garage = (args.garage or os.getenv("SJSU_GARAGE", "")).strip()
     html = fetch_parking_page()
     garage, percent = parse_garage_status(html, garage)
 
-    rocketride_uri = os.getenv("ROCKETRIDE_URI", "ws://localhost:5565")
+    rocketride_uri = args.uri or os.getenv("ROCKETRIDE_URI", "ws://localhost:5565")
     client_options = {"uri": rocketride_uri}
     if rocketride_uri.startswith(("ws://localhost", "ws://127.0.0.1")):
         # Local RocketRide development engines use this built-in handshake value.
@@ -113,8 +180,8 @@ async def main():
         answers = response.get("answers") or []
         status = str(answers[0]) if answers else f"{garage}: {percent}% full"
 
-        print(status)
-        Notification(app_id="SJSU Parking", title="SJSU Parking", msg=status).show()
+        print_status(garage, percent, status)
+        send_notification(status, resolve_notification_mode(args.notify))
     finally:
         if token is not None:
             try:
@@ -124,5 +191,9 @@ async def main():
         await client.disconnect()
 
 
-if __name__ == "__main__":
+def cli():
     asyncio.run(main())
+
+
+if __name__ == "__main__":
+    cli()

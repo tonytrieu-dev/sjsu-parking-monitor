@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sjsu-parking-monitor"
+version = "0.1.0"
+description = "A portable CLI that reports live SJSU garage fullness."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "rocketride==1.4.0",
+    "rich>=14.0,<15.0",
+    "winotify==1.1.0; sys_platform == 'win32'",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=8.0",
+]
+
+[project.scripts]
+parking-monitor = "check_parking:cli"
+
+[tool.setuptools]
+py-modules = ["check_parking"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
