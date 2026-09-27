@@ -20,6 +20,12 @@ The monitor uses Python's standard-library HTTP client, so it does not require `
 
 The local RocketRide development handshake is used automatically for localhost. A RocketRide engine key is not required in `.env`.
 
+## Why RocketRide is included
+
+Parking retrieval and parsing remain deterministic Python application code. RocketRide sits around that workflow as an inspectable AI harness: the application sends the live, parsed status into a small pipeline, and the pipeline owns the prompt, model profile, provider, and response formatting.
+
+To change providers or models, edit `sjsu-parking.pipe` rather than rewriting the garage fetcher or parser. The current pipeline uses Gemini as a simple example, but the Python integration stays provider-neutral through `ROCKETRIDE_LLM_API_KEY`. This keeps the project useful as the workflow grows beyond a one-line status response without claiming that AI is required to read the parking page.
+
 ## Install
 
 ```bash
@@ -59,6 +65,17 @@ Run using the installed command:
 
 ```bash
 parking-monitor
+```
+
+Example output:
+
+```text
++- SJSU Parking Status -------+
+|                             |
+|  North Garage               |
+|  8% full                    |
+|                             |
++-----------------------------+
 ```
 
 Command-line options override corresponding environment variables:

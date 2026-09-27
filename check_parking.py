@@ -7,9 +7,17 @@ from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from rich.console import Console
-from rich.panel import Panel
-from rich.text import Text
+try:
+    from rich.console import Console
+    from rich.panel import Panel
+    from rich.text import Text
+except ModuleNotFoundError as error:
+    if error.name == "rich":
+        raise SystemExit(
+            "Missing dependency 'rich'. Activate the project environment or run: "
+            "python -m pip install ."
+        ) from None
+    raise
 from rocketride import RocketRideClient
 from rocketride.schema import Question
 PIPELINE = Path(__file__).with_name("sjsu-parking.pipe")
@@ -22,9 +30,9 @@ GARAGE_NAMES = (
 )
 
 
-def load_local_env():
+def load_local_env(env_file=None):
     """Load simple KEY=VALUE entries from .env without overwriting the shell."""
-    env_file = Path(__file__).with_name(".env")
+    env_file = env_file or Path(__file__).with_name(".env")
     if not env_file.exists():
         return
 
@@ -67,6 +75,11 @@ def parse_args(args=None):
         default=None,
         help="RocketRide WebSocket URI (defaults to ROCKETRIDE_URI or localhost).",
     )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Show a traceback for unexpected errors.",
+    )
     return parser.parse_args(args)
 
 
@@ -107,14 +120,25 @@ def status_color(percent):
 
 
 def print_status(garage, percent, status, console=None):
-    """Render a readable terminal status while preserving the LLM response."""
+    """Render a readable status without repeating the default LLM response."""
     console = console or Console()
     color = status_color(percent)
     content = Text()
     content.append(f"{garage}\n", style="bold")
-    content.append(f"{percent}% full\n\n", style=f"bold {color}")
-    content.append(status)
-    console.print(Panel(content, title="SJSU Parking", border_style=color, padding=(1, 2)))
+    content.append(f"{percent}% full", style=f"bold {color}")
+    default_status = f"{garage}: {percent}% full"
+    if status.strip().casefold() != default_status.casefold():
+        content.append("\n\nRocketRide\n", style="bold cyan")
+        content.append(status)
+    console.print(
+        Panel(
+            content,
+            title="SJSU Parking Status",
+            border_style=color,
+            padding=(1, 2),
+            expand=False,
+        )
+    )
 
 
 def parse_garage_status(html, garage_name):
@@ -150,9 +174,9 @@ def parse_garage_status(html, garage_name):
     return requested, percent
 
 
-async def main():
+async def main(args=None):
     load_local_env()
-    args = parse_args()
+    args = args or parse_args()
     garage = (args.garage or os.getenv("SJSU_GARAGE", "")).strip()
     html = fetch_parking_page()
     garage, percent = parse_garage_status(html, garage)
@@ -179,9 +203,15 @@ async def main():
         response = await client.chat(token=token, question=question)
         answers = response.get("answers") or []
         status = str(answers[0]) if answers else f"{garage}: {percent}% full"
+        if status.strip().casefold().startswith("error:"):
+            raise RuntimeError(status.split(":", 1)[1].strip())
 
         print_status(garage, percent, status)
-        send_notification(status, resolve_notification_mode(args.notify))
+        notification_mode = resolve_notification_mode(args.notify)
+        try:
+            send_notification(status, notification_mode)
+        except Exception as error:
+            Console(stderr=True).print(Text(f"Warning: notification failed: {error}", style="yellow"))
     finally:
         if token is not None:
             try:
@@ -191,9 +221,17 @@ async def main():
         await client.disconnect()
 
 
-def cli():
-    asyncio.run(main())
+def cli(args=None):
+    parsed_args = parse_args(args)
+    try:
+        asyncio.run(main(parsed_args))
+    except Exception as error:
+        if parsed_args.debug:
+            raise
+        Console(stderr=True).print(Text(f"Error: {error}", style="red"))
+        return 1
+    return 0
 
 
 if __name__ == "__main__":
-    cli()
+    raise SystemExit(cli())
