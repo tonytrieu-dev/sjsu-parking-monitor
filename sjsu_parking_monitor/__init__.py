@@ -179,17 +179,18 @@ def parse_garage_status(html, garage_name):
 
 async def close_client_after_pipeline(client, token, preserve_workflow_error):
     """Release RocketRide resources while preserving an active workflow failure."""
+    cleanup_error = None
     if token is not None:
         try:
             await client.terminate(token)
-        except Exception:
-            if not preserve_workflow_error:
-                raise
+        except Exception as error:
+            cleanup_error = error
     try:
         await client.disconnect()
-    except Exception:
-        if not preserve_workflow_error:
-            raise
+    except Exception as error:
+        cleanup_error = cleanup_error or error
+    if cleanup_error and not preserve_workflow_error:
+        raise cleanup_error
 
 
 async def run_pipeline(garage, percent, rocketride_uri):

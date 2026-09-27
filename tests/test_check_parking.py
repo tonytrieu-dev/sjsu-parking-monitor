@@ -97,6 +97,7 @@ def test_local_env_loads_values_without_overwriting_shell(tmp_path, monkeypatch)
 class FakeRocketRideClient:
     connect_error = None
     chat_error = None
+    terminate_error = None
     disconnect_error = None
     answers = []
     instances = []
@@ -123,6 +124,8 @@ class FakeRocketRideClient:
 
     async def terminate(self, token):
         self.terminated = True
+        if self.terminate_error:
+            raise self.terminate_error
 
     async def disconnect(self):
         self.disconnected = True
@@ -135,12 +138,14 @@ def configure_main_test(
     answers=None,
     connect_error=None,
     chat_error=None,
+    terminate_error=None,
     disconnect_error=None,
 ):
     FakeRocketRideClient.instances.clear()
     FakeRocketRideClient.answers = answers or []
     FakeRocketRideClient.connect_error = connect_error
     FakeRocketRideClient.chat_error = chat_error
+    FakeRocketRideClient.terminate_error = terminate_error
     FakeRocketRideClient.disconnect_error = disconnect_error
     monkeypatch.setattr(check_parking, "RocketRideClient", FakeRocketRideClient)
     monkeypatch.setattr(check_parking, "load_local_env", lambda *_args: None)
@@ -192,6 +197,14 @@ def test_main_propagates_rocketride_and_provider_failures(monkeypatch):
     )
     with pytest.raises(RuntimeError, match="disconnect failed"):
         asyncio.run(check_parking.main(args))
+
+    configure_main_test(
+        monkeypatch,
+        terminate_error=RuntimeError("terminate failed"),
+    )
+    with pytest.raises(RuntimeError, match="terminate failed"):
+        asyncio.run(check_parking.main(args))
+    assert FakeRocketRideClient.instances[0].disconnected
 
 
 def test_main_rejects_provider_error_returned_as_answer(monkeypatch):
