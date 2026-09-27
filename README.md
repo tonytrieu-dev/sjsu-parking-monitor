@@ -24,7 +24,7 @@ The local RocketRide development handshake is used automatically for localhost. 
 
 Parking retrieval and parsing remain deterministic Python application code. RocketRide sits around that workflow as an inspectable AI harness: the application sends the live, parsed status into a small pipeline, and the pipeline owns the prompt, model profile, provider, and response formatting.
 
-To change providers or models, edit `sjsu-parking.pipe` rather than rewriting the garage fetcher or parser. The current pipeline uses Gemini as a simple example, but the Python integration stays provider-neutral through `ROCKETRIDE_LLM_API_KEY`. This keeps the project useful as the workflow grows beyond a one-line status response without claiming that AI is required to read the parking page.
+To change providers or models, edit `sjsu_parking_monitor/sjsu-parking.pipe` rather than rewriting the garage fetcher or parser. The current pipeline uses Gemini as a simple example, but the Python integration stays provider-neutral through `ROCKETRIDE_LLM_API_KEY`. This keeps the project useful as the workflow grows beyond a one-line status response without claiming that AI is required to read the parking page.
 
 ## Install
 
@@ -58,6 +58,8 @@ SJSU_GARAGE=North Garage
 ```
 
 Supported garages currently include North Garage, South Garage, West Garage, and South Campus Garage. The selected garage is required; there is no implicit default.
+
+The monitor reads `.env` from its current working directory. Run the command from the directory containing that file; command-line options and existing shell variables still take precedence.
 
 ## CLI
 
@@ -107,7 +109,7 @@ Use the scheduler native to your operating system:
 - macOS: `launchd`.
 - Linux: `cron` or a `systemd` timer.
 
-Run the task from the repository directory so `.env` and `sjsu-parking.pipe` are found. Desktop notifications may require an interactive user session, depending on the operating system.
+Set the scheduled task's working directory to the directory containing `.env`. The pipeline is bundled in the installed package and does not need to be copied beside the task. Desktop notifications may require an interactive user session, depending on the operating system.
 
 ## Development
 
