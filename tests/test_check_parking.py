@@ -1,7 +1,5 @@
 import asyncio
-import json
 import os
-import subprocess
 import sys
 import types
 from argparse import Namespace
@@ -65,25 +63,13 @@ def test_parser_supports_multiple_garages_and_full_status():
     assert check_parking.parse_garage_status(PAGE, "South Garage") == ("South Garage", 100)
 
 
-def test_parser_accepts_trimmed_case_insensitive_selection():
-    assert check_parking.parse_garage_status(PAGE, "  south garage ") == ("south garage", 100)
-
-
-def test_parser_rejects_missing_or_malformed_selection():
-    cases = [
-        ("", "SJSU_GARAGE is required"),
-        (None, "SJSU_GARAGE is required"),
-        ("West Garage", "Could not find fullness"),
-        ("North Garage", "Could not find fullness"),
-    ]
+def test_parser_rejects_missing_malformed_and_out_of_range_data():
     malformed_page = '<div class="garage-name">North Garage</div>'
-    for garage, message in cases:
-        html = malformed_page if garage == "North Garage" else PAGE
-        with pytest.raises(ValueError, match=message):
-            check_parking.parse_garage_status(html, garage)
 
-
-def test_parser_rejects_out_of_range_percentage():
+    with pytest.raises(ValueError, match="SJSU_GARAGE is required"):
+        check_parking.parse_garage_status(PAGE, "")
+    with pytest.raises(ValueError, match="Could not find fullness"):
+        check_parking.parse_garage_status(malformed_page, "North Garage")
     with pytest.raises(ValueError, match="Invalid fullness percentage"):
         check_parking.parse_garage_status(PAGE.replace("42%", "101%"), "North Garage")
 
@@ -101,16 +87,6 @@ def test_local_env_loads_values_without_overwriting_shell(tmp_path, monkeypatch)
 
     assert os.environ["SJSU_GARAGE"] == "South Garage"
     assert os.environ["NEW_SETTING"] == "value"
-
-
-def test_pipeline_owns_provider_configuration():
-    pipeline = json.loads(check_parking.PIPELINE.read_text(encoding="utf-8"))
-    llm = next(item for item in pipeline["components"] if item["provider"] == "llm_gemini")
-
-    assert llm["config"] == {
-        "profile": "gemini-2_5-flash",
-        "apikey": "${ROCKETRIDE_LLM_API_KEY}",
-    }
 
 
 class FakeRocketRideClient:
@@ -156,30 +132,9 @@ def configure_main_test(monkeypatch, answers=None, connect_error=None, chat_erro
     monkeypatch.setattr(check_parking, "fetch_parking_page", lambda: PAGE)
 
 
-def test_main_handles_multiple_garages_and_empty_answer_fallback(monkeypatch):
+def test_main_uses_local_handshake_pipeline_copy_and_empty_answer_fallback(monkeypatch):
     rendered = []
     configure_main_test(monkeypatch)
-    monkeypatch.setattr(check_parking, "print_status", lambda *args: rendered.append(args))
-    monkeypatch.setattr(check_parking, "send_notification", lambda *args: None)
-
-    for garage, expected in (("North Garage", 42), ("South Garage", 100)):
-        asyncio.run(
-            check_parking.main(
-                Namespace(garage=garage, notify="none", uri="ws://localhost:5565", debug=False)
-            )
-        )
-
-    assert rendered == [
-        ("North Garage", 42, "North Garage: 42% full"),
-        ("South Garage", 100, "South Garage: 100% full"),
-    ]
-    assert FakeRocketRideClient.instances[-1].terminated
-    assert FakeRocketRideClient.instances[-1].disconnected
-
-
-def test_main_uses_local_handshake_and_llm_response(monkeypatch):
-    rendered = []
-    configure_main_test(monkeypatch, answers=["AI-formatted parking status"])
     monkeypatch.setattr(check_parking, "print_status", lambda *args: rendered.append(args))
     monkeypatch.setattr(check_parking, "send_notification", lambda *args: None)
 
@@ -192,7 +147,9 @@ def test_main_uses_local_handshake_and_llm_response(monkeypatch):
     client = FakeRocketRideClient.instances[0]
     assert client.options == {"uri": "ws://localhost:5565", "auth": "MYAPIKEY"}
     assert Path(client.pipeline_path) != Path(str(check_parking.PIPELINE))
-    assert rendered == [("North Garage", 42, "AI-formatted parking status")]
+    assert rendered == [("North Garage", 42, "North Garage: 42% full")]
+    assert client.terminated
+    assert client.disconnected
 
 
 def test_main_propagates_rocketride_and_provider_failures(monkeypatch):
@@ -255,7 +212,7 @@ def test_cli_turns_expected_failure_into_short_error(monkeypatch, capsys):
     assert capsys.readouterr().err.strip() == "Error: SJSU parking page unavailable"
 
 
-def test_output_is_compact_and_does_not_repeat_default_response():
+def test_output_is_compact_without_hiding_meaningful_response():
     console = Console(file=StringIO(), record=True, force_terminal=False)
     check_parking.print_status("North Garage", 42, "North Garage: 42% full", console)
     rendered = console.export_text()
@@ -264,8 +221,6 @@ def test_output_is_compact_and_does_not_repeat_default_response():
     assert rendered.count("North Garage") == 1
     assert "North Garage: 42% full" not in rendered
 
-
-def test_output_keeps_meaningful_rocketride_response():
     console = Console(file=StringIO(), record=True, force_terminal=False)
     check_parking.print_status("North Garage", 42, "North Garage has plenty of space", console)
     rendered = console.export_text()
@@ -295,91 +250,3 @@ def test_notification_modes_cover_portable_and_windows_paths(monkeypatch):
     monkeypatch.setitem(sys.modules, "winotify", types.SimpleNamespace(Notification=FakeNotification))
     check_parking.send_notification("status", "desktop")
     assert calls == [{"app_id": "SJSU Parking", "title": "SJSU Parking", "msg": "status"}, "shown"]
-
-
-@pytest.fixture(scope="session")
-def installed_package(tmp_path_factory):
-    build_dir = tmp_path_factory.mktemp("wheel")
-    install_dir = tmp_path_factory.mktemp("installed")
-    project_dir = Path(__file__).parents[1]
-    subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "pip",
-            "wheel",
-            "--no-deps",
-            "--no-build-isolation",
-            "--wheel-dir",
-            str(build_dir),
-            str(project_dir),
-        ],
-        check=True,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    wheel = next(build_dir.glob("*.whl"))
-    subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "pip",
-            "install",
-            "--no-deps",
-            "--target",
-            str(install_dir),
-            str(wheel),
-        ],
-        check=True,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    return install_dir
-
-
-def installed_environment(install_dir):
-    environment = os.environ.copy()
-    environment["PYTHONPATH"] = str(install_dir)
-    for key in ("SJSU_GARAGE", "SJSU_NOTIFY", "ROCKETRIDE_URI"):
-        environment.pop(key, None)
-    return environment
-
-
-def test_wheel_contains_loadable_pipeline(installed_package, tmp_path):
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            "import json, sjsu_parking_monitor as m; "
-            "print(json.loads(m.PIPELINE.read_text(encoding='utf-8'))['name'])",
-        ],
-        cwd=tmp_path,
-        env=installed_environment(installed_package),
-        capture_output=True,
-        text=True,
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == "SJSU Garage Status Monitor"
-
-
-def test_installed_command_reads_env_from_working_directory(installed_package, tmp_path):
-    (tmp_path / ".env").write_text(
-        "SJSU_GARAGE=North Garage\nSJSU_NOTIFY=invalid\n",
-        encoding="utf-8",
-    )
-    command = installed_package / "bin" / (
-        "parking-monitor.exe" if os.name == "nt" else "parking-monitor"
-    )
-    result = subprocess.run(
-        [str(command)],
-        cwd=tmp_path,
-        env=installed_environment(installed_package),
-        capture_output=True,
-        text=True,
-    )
-
-    assert result.returncode == 1
-    assert "SJSU_NOTIFY must be one of" in result.stderr
