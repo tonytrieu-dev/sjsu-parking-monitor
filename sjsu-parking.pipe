@@ -1,0 +1,39 @@
+{
+  "name": "SJSU Garage Status Monitor",
+  "project_id": "f3b30873-e4f0-42ca-af6b-1d89b031df85",
+  "source": "chat_1",
+  "components": [
+    {
+      "id": "chat_1",
+      "provider": "chat",
+      "config": {}
+    },
+    {
+      "id": "llm_1",
+      "provider": "llm_gemini",
+      "config": {
+        "profile": "gemini-2_5-flash",
+        "apikey": "${ROCKETRIDE_LLM_API_KEY}"
+      },
+      "input": [
+        {
+          "lane": "questions",
+          "from": "chat_1"
+        }
+      ]
+    },
+    {
+      "id": "response_1",
+      "provider": "response",
+      "config": {
+        "laneName": "answers"
+      },
+      "input": [
+        {
+          "lane": "answers",
+          "from": "llm_1"
+        }
+      ]
+    }
+  ]
+}

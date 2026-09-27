@@ -1,0 +1,32 @@
+# Secrets and local configuration
+.env
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+
+# RocketRide local runtime and generated metadata
+.rocketride/
+
+# Packages and build output
+*.whl
+*.egg-info/
+build/
+dist/
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+*.bak
+
+# IDE and OS files
+.vscode/
+.idea/
+*.code-workspace
+.DS_Store
+Thumbs.db
