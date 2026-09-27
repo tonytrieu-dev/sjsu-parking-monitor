@@ -65,11 +65,16 @@ def test_parser_supports_multiple_garages_and_full_status():
 
 def test_parser_rejects_missing_malformed_and_out_of_range_data():
     malformed_page = '<div class="garage-name">North Garage</div>'
+    missing_north_fullness = PAGE.replace(
+        '<span class="garage__fullness">42%</span>', ""
+    )
 
     with pytest.raises(ValueError, match="SJSU_GARAGE is required"):
         check_parking.parse_garage_status(PAGE, "")
     with pytest.raises(ValueError, match="Could not find fullness"):
         check_parking.parse_garage_status(malformed_page, "North Garage")
+    with pytest.raises(ValueError, match="Could not find fullness"):
+        check_parking.parse_garage_status(missing_north_fullness, "North Garage")
     with pytest.raises(ValueError, match="Invalid fullness percentage"):
         check_parking.parse_garage_status(PAGE.replace("42%", "101%"), "North Garage")
 
@@ -92,6 +97,7 @@ def test_local_env_loads_values_without_overwriting_shell(tmp_path, monkeypatch)
 class FakeRocketRideClient:
     connect_error = None
     chat_error = None
+    disconnect_error = None
     answers = []
     instances = []
 
@@ -120,13 +126,22 @@ class FakeRocketRideClient:
 
     async def disconnect(self):
         self.disconnected = True
+        if self.disconnect_error:
+            raise self.disconnect_error
 
 
-def configure_main_test(monkeypatch, answers=None, connect_error=None, chat_error=None):
+def configure_main_test(
+    monkeypatch,
+    answers=None,
+    connect_error=None,
+    chat_error=None,
+    disconnect_error=None,
+):
     FakeRocketRideClient.instances.clear()
     FakeRocketRideClient.answers = answers or []
     FakeRocketRideClient.connect_error = connect_error
     FakeRocketRideClient.chat_error = chat_error
+    FakeRocketRideClient.disconnect_error = disconnect_error
     monkeypatch.setattr(check_parking, "RocketRideClient", FakeRocketRideClient)
     monkeypatch.setattr(check_parking, "load_local_env", lambda *_args: None)
     monkeypatch.setattr(check_parking, "fetch_parking_page", lambda: PAGE)
@@ -136,7 +151,11 @@ def test_main_uses_local_handshake_pipeline_copy_and_empty_answer_fallback(monke
     rendered = []
     configure_main_test(monkeypatch)
     monkeypatch.setattr(check_parking, "print_status", lambda *args: rendered.append(args))
-    monkeypatch.setattr(check_parking, "send_notification", lambda *args: None)
+    monkeypatch.setattr(
+        check_parking,
+        "send_desktop_notification",
+        lambda *_args: pytest.fail("notifications must not run in none mode"),
+    )
 
     asyncio.run(
         check_parking.main(
@@ -159,6 +178,21 @@ def test_main_propagates_rocketride_and_provider_failures(monkeypatch):
         with pytest.raises(RuntimeError, match=str(error)):
             asyncio.run(check_parking.main(args))
 
+    configure_main_test(
+        monkeypatch,
+        chat_error=RuntimeError("LLM API key rejected"),
+        disconnect_error=RuntimeError("disconnect failed"),
+    )
+    with pytest.raises(RuntimeError, match="LLM API key rejected"):
+        asyncio.run(check_parking.main(args))
+
+    configure_main_test(
+        monkeypatch,
+        disconnect_error=RuntimeError("disconnect failed"),
+    )
+    with pytest.raises(RuntimeError, match="disconnect failed"):
+        asyncio.run(check_parking.main(args))
+
 
 def test_main_rejects_provider_error_returned_as_answer(monkeypatch):
     configure_main_test(monkeypatch, answers=["Error: Please enter your Gemini API key."])
@@ -168,17 +202,14 @@ def test_main_rejects_provider_error_returned_as_answer(monkeypatch):
         asyncio.run(check_parking.main(args))
 
 
-def test_notification_failure_is_warning_for_auto_and_fatal_for_desktop(monkeypatch, capsys):
+def test_explicit_desktop_notification_failure_is_fatal(monkeypatch, capsys):
     configure_main_test(monkeypatch)
     monkeypatch.setattr(check_parking, "print_status", lambda *args: None)
-    monkeypatch.setattr(check_parking, "send_notification", lambda *args: (_ for _ in ()).throw(RuntimeError("toast unavailable")))
-
-    asyncio.run(
-        check_parking.main(
-            Namespace(garage="North Garage", notify="auto", uri="ws://localhost:5565", debug=False)
-        )
+    monkeypatch.setattr(
+        check_parking,
+        "send_desktop_notification",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("toast unavailable")),
     )
-    assert "Warning: notification failed: toast unavailable" in capsys.readouterr().err
 
     assert check_parking.cli(
         ["--garage", "North Garage", "--notify", "desktop", "--uri", "ws://localhost:5565"]
@@ -229,13 +260,10 @@ def test_output_is_compact_without_hiding_meaningful_response():
     assert "North Garage has plenty of space" in rendered
 
 
-def test_notification_modes_cover_portable_and_windows_paths(monkeypatch):
-    check_parking.send_notification("status", "none")
-
+def test_desktop_notification_covers_unsupported_and_windows_paths(monkeypatch):
     monkeypatch.setattr(check_parking.platform, "system", lambda: "Linux")
-    check_parking.send_notification("status", "auto")
     with pytest.raises(RuntimeError, match="only on Windows"):
-        check_parking.send_notification("status", "desktop")
+        check_parking.send_desktop_notification("status")
 
     calls = []
 
@@ -248,5 +276,5 @@ def test_notification_modes_cover_portable_and_windows_paths(monkeypatch):
 
     monkeypatch.setattr(check_parking.platform, "system", lambda: "Windows")
     monkeypatch.setitem(sys.modules, "winotify", types.SimpleNamespace(Notification=FakeNotification))
-    check_parking.send_notification("status", "desktop")
+    check_parking.send_desktop_notification("status")
     assert calls == [{"app_id": "SJSU Parking", "title": "SJSU Parking", "msg": "status"}, "shown"]

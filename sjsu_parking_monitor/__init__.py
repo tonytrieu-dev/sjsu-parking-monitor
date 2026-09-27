@@ -4,7 +4,7 @@ import os
 import platform
 import re
 import shutil
-from contextlib import suppress
+import sys
 from importlib import resources
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -67,9 +67,9 @@ def parse_args(args=None):
     parser.add_argument("--garage", default=None, help="Garage name (defaults to SJSU_GARAGE).")
     parser.add_argument(
         "--notify",
-        choices=("auto", "desktop", "none"),
+        choices=("desktop", "none"),
         default=None,
-        help="Notification mode (defaults to SJSU_NOTIFY or auto).",
+        help="Notification mode (defaults to SJSU_NOTIFY or none).",
     )
     parser.add_argument(
         "--uri",
@@ -80,44 +80,25 @@ def parse_args(args=None):
     return parser.parse_args(args)
 
 
-def send_notification(message, mode):
-    """Send a desktop notification when supported."""
-    if mode == "none":
-        return
+def send_desktop_notification(message):
+    """Send a desktop notification or raise an actionable error."""
     if platform.system() != "Windows":
-        if mode == "desktop":
-            raise RuntimeError("Desktop notifications are currently supported only on Windows")
-        return
+        raise RuntimeError("Desktop notifications are currently supported only on Windows")
 
     try:
         from winotify import Notification
     except ImportError as error:
-        if mode == "desktop":
-            raise RuntimeError(
-                "Desktop notifications require the optional winotify dependency"
-            ) from error
-        return
+        raise RuntimeError(
+            "Desktop notifications require the optional winotify dependency"
+        ) from error
     Notification(app_id="SJSU Parking", title="SJSU Parking", msg=message).show()
 
 
 def resolve_notification_mode(cli_mode=None):
-    mode = cli_mode or os.getenv("SJSU_NOTIFY", "auto").strip().lower()
-    if mode not in {"auto", "desktop", "none"}:
-        raise ValueError("SJSU_NOTIFY must be one of: auto, desktop, none")
+    mode = cli_mode or os.getenv("SJSU_NOTIFY", "none").strip().lower()
+    if mode not in {"desktop", "none"}:
+        raise ValueError("SJSU_NOTIFY must be one of: desktop, none")
     return mode
-
-
-def deliver_notification(message, mode):
-    """Apply best-effort semantics only to automatic notifications."""
-    if mode != "auto":
-        send_notification(message, mode)
-        return
-    try:
-        send_notification(message, mode)
-    except Exception as error:
-        Console(stderr=True).print(
-            Text(f"Warning: notification failed: {error}", style="yellow")
-        )
 
 
 def status_color(percent):
@@ -161,30 +142,54 @@ def parse_garage_status(html, garage_name):
         rf'<h2\s+class=["\']garage__name["\']>\s*'
         rf'{re.escape(requested)}\s*</h2>'
     )
-    match = re.search(
-        garage_heading
-        + rf'.*?<span\s+class=["\']garage__fullness["\']>\s*'
-        + rf'(?:(?P<fullness>\d+)\s*%|(?P<full>Full))',
-        html,
-        re.DOTALL | re.IGNORECASE,
-    )
-    if not match:
+    selected_heading = re.search(garage_heading, html, re.DOTALL | re.IGNORECASE)
+    if not selected_heading:
         raise ValueError(
             f"Could not find fullness for configured garage {requested!r}. "
             "Check SJSU_GARAGE against the garage names on the SJSU status page."
         )
-    fullness = match.group("fullness") or match.group("full")
+
+    html_after_heading = html[selected_heading.end() :]
+    next_heading = re.search(
+        r'<h2\s+class=["\']garage__name["\']>',
+        html_after_heading,
+        re.IGNORECASE,
+    )
+    selected_garage_html = (
+        html_after_heading[: next_heading.start()] if next_heading else html_after_heading
+    )
+    fullness_match = re.search(
+        r'<span\s+class=["\']garage__fullness["\']>\s*'
+        r'(?:(?P<fullness>\d+)\s*%|(?P<full>Full))',
+        selected_garage_html,
+        re.DOTALL | re.IGNORECASE,
+    )
+    if not fullness_match:
+        raise ValueError(
+            f"Could not find fullness for configured garage {requested!r}. "
+            "Check SJSU_GARAGE against the garage names on the SJSU status page."
+        )
+
+    fullness = fullness_match.group("fullness") or fullness_match.group("full")
     percent = 100 if fullness.lower() == "full" else int(fullness)
     if not 0 <= percent <= 100:
         raise ValueError(f"Invalid fullness percentage for {requested!r}: {percent}%")
     return requested, percent
 
 
-async def close_client(client, token):
+async def close_client_after_pipeline(client, token, preserve_workflow_error):
+    """Release RocketRide resources while preserving an active workflow failure."""
     if token is not None:
-        with suppress(Exception):
+        try:
             await client.terminate(token)
-    await client.disconnect()
+        except Exception:
+            if not preserve_workflow_error:
+                raise
+    try:
+        await client.disconnect()
+    except Exception:
+        if not preserve_workflow_error:
+            raise
 
 
 async def run_pipeline(garage, percent, rocketride_uri):
@@ -213,7 +218,11 @@ async def run_pipeline(garage, percent, rocketride_uri):
             raise RuntimeError(status.split(":", 1)[1].strip())
         return status
     finally:
-        await close_client(client, token)
+        await close_client_after_pipeline(
+            client,
+            token,
+            preserve_workflow_error=sys.exc_info()[0] is not None,
+        )
 
 
 async def main(args=None, env_file=None):
@@ -226,7 +235,8 @@ async def main(args=None, env_file=None):
     rocketride_uri = args.uri or os.getenv("ROCKETRIDE_URI", "ws://localhost:5565")
     status = await run_pipeline(garage, percent, rocketride_uri)
     print_status(garage, percent, status)
-    deliver_notification(status, notification_mode)
+    if notification_mode == "desktop":
+        send_desktop_notification(status)
 
 
 def cli(args=None):

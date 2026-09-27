@@ -10,7 +10,7 @@ SJSU Parking Status -> Python HTTP client -> Garage parser -> RocketRide -> Cons
                                                    Optional desktop notification
 ```
 
-The monitor uses Python's standard-library HTTP client, so it does not require `curl.exe` or another operating-system executable. Terminal output is formatted with Rich, which works across Windows, macOS, and Linux. Desktop notifications are automatic on Windows when `winotify` is installed; on other systems the console output remains the portable default.
+The monitor uses Python's standard-library HTTP client, so it does not require `curl.exe` or another operating-system executable. Terminal output is formatted with Rich, which works across Windows, macOS, and Linux. Console-only operation is the default. Windows desktop notifications are available when explicitly requested with `--notify desktop`.
 
 ## Prerequisites
 
@@ -90,7 +90,7 @@ parking-monitor --uri ws://localhost:5565
 Available options:
 
 - `--garage NAME`: overrides `SJSU_GARAGE`.
-- `--notify {auto,desktop,none}`: overrides `SJSU_NOTIFY`. `auto` is the default.
+- `--notify {desktop,none}`: overrides `SJSU_NOTIFY`. `none` is the default.
 - `--uri URI`: overrides `ROCKETRIDE_URI`.
 
 The original entry point remains supported:
@@ -99,7 +99,7 @@ The original entry point remains supported:
 python check_parking.py
 ```
 
-Use `--notify none` when running in a log-only or headless environment.
+Use `--notify desktop` to request a Windows notification. Notification failures are fatal when desktop delivery is explicitly requested.
 
 ## Scheduling
 
