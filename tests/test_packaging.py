@@ -20,7 +20,6 @@ def installed_package(tmp_path_factory):
             "pip",
             "wheel",
             "--no-deps",
-            "--no-build-isolation",
             "--wheel-dir",
             str(build_dir),
             str(project_dir),
